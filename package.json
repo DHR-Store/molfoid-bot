@@ -1,0 +1,28 @@
+{
+  "name": "molfoid-bot",
+  "version": "1.0.0",
+  "description": "AI-powered Discord bot with GIF support",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "deploy": "node src/deploy-commands.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "ai",
+    "groq"
+  ],
+  "author": "prady",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.20.0",
+    "discord.js": "^14.27.0",
+    "dotenv": "^18.0.6",
+    "groq-sdk": "^1.6.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

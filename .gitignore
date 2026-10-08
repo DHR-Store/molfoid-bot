@@ -1,0 +1,112 @@
+# ================================
+# Environment & Secrets
+# ================================
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+*.env
+!.env.example
+
+# ================================
+# Node.js
+# ================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.npm
+.yarn/
+.pnp
+.pnp.js
+package-lock.json.bak
+yarn.lock.bak
+
+# ================================
+# PM2 (production process manager)
+# ================================
+.pm2/
+pm2.log
+pm2-error.log
+pm2-out.log
+
+# ================================
+# Logs
+# ================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ================================
+# Bot Runtime Data
+# ================================
+data/
+database/
+*.sqlite
+*.sqlite3
+*.db
+cooldowns.json
+cache/
+.cache/
+
+# ================================
+# OS Files
+# ================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+*.swp
+*~
+
+# ================================
+# IDE / Editor
+# ================================
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+# ================================
+# Build / Temp
+# ================================
+dist/
+build/
+out/
+tmp/
+temp/
+*.tgz
+.cache/
+
+# ================================
+# Testing & Coverage
+# ================================
+coverage/
+.nyc_output/
+*.lcov
+
+# ================================
+# Debug Files (yours)
+# ================================
+src/debug.js
+src/send-test.js
+test-groq.js
+test-*.js
+!test-important.js
+
+# ================================
+# Docker (if you add it later)
+# ================================
+docker-compose.override.yml
+.dockerignore
