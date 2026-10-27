@@ -1,13 +1,16 @@
-const axios = require('axios');
+const cloudscraper = require('cloudscraper');
 const cheerio = require('cheerio');
 
 const BASE_URL = 'https://pagalnew.com';
 const HEADERS = {
-  'User-Agent':
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
   'Accept-Language': 'en-US,en;q=0.9',
-  Referer: BASE_URL + '/',
+  'Referer': BASE_URL + '/',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'same-origin',
+  'Upgrade-Insecure-Requests': '1'
 };
 
 function toAbsolute(href) {
@@ -19,8 +22,6 @@ function toAbsolute(href) {
 
 /**
  * Parse a song page into metadata + download links.
- * @param {cheerio.CheerioAPI} $
- * @param {string} url - The absolute song URL.
  */
 function parseSongPage($, url) {
   // Title
@@ -54,7 +55,7 @@ function parseSongPage($, url) {
     }
   });
 
-  // Metadata — FIXED parsing (trim first, then strip colon; use .data for text nodes)
+  // Metadata
   const meta = {};
   $('b').each((_, el) => {
     const rawLabel = $(el).text();
@@ -81,14 +82,10 @@ function parseSongPage($, url) {
     if (label && value) meta[label] = value.replace(/\s+/g, ' ');
   });
 
-  const singers =
-    meta['Singer(s)'] || meta['Singer'] || meta['Singers'] || '';
-  const composer =
-    meta['Music Composer'] || meta['Composer'] || meta['Music'] || '';
-  const releasedOn =
-    meta['Released On'] || meta['Release Date'] || '';
-  const starring =
-    meta['Lead Star(s)'] || meta['Starring'] || meta['Actors'] || '';
+  const singers = meta['Singer(s)'] || meta['Singer'] || meta['Singers'] || '';
+  const composer = meta['Music Composer'] || meta['Composer'] || meta['Music'] || '';
+  const releasedOn = meta['Released On'] || meta['Release Date'] || '';
+  const starring = meta['Lead Star(s)'] || meta['Starring'] || meta['Actors'] || '';
 
   let movie = meta['Movie'] || meta['Album'] || '';
   if (!movie) {
@@ -113,18 +110,14 @@ function parseSongPage($, url) {
 }
 
 /**
- * Search pagalnew and return a list of ALL matching songs (basic info only).
- * @param {string} query
- * @returns {Promise<Array<{title: string, url: string, thumbnail: string|null, artist: string}>>}
+ * Search pagalnew and return a list of ALL matching songs.
  */
 async function searchMusicList(query) {
   try {
     const searchUrl = `${BASE_URL}/search.php?find=${encodeURIComponent(query)}`;
-    const { data: searchHtml } = await axios.get(searchUrl, {
-      headers: HEADERS,
-      timeout: 15000,
-      maxRedirects: 5,
-    });
+    
+    // Using cloudscraper instead of axios
+    const searchHtml = await cloudscraper.get(searchUrl, { headers: HEADERS });
 
     const $ = cheerio.load(searchHtml);
     const results = [];
@@ -138,21 +131,14 @@ async function searchMusicList(query) {
       if (seen.has(absolute)) return;
       seen.add(absolute);
 
-      // Title — prefer the .relatedfiles div, fall back to link text
       let title = $(el).find('.relatedfiles').first().text().replace(/\s+/g, ' ').trim();
       if (!title) title = $(el).text().replace(/\s+/g, ' ').trim();
       if (!title) {
-        title = absolute
-          .split('/')
-          .pop()
-          .replace('.html', '')
-          .replace(/-/g, ' ');
+        title = absolute.split('/').pop().replace('.html', '').replace(/-/g, ' ');
       }
 
-      // Artist — the .h5 div under the link
       const artist = $(el).find('.h5').first().text().replace(/\s+/g, ' ').trim();
 
-      // Thumbnail
       const img = $(el).find('img').first();
       let thumbnail = img.attr('data-src') || img.attr('src') || null;
       if (thumbnail && thumbnail.startsWith('./')) {
@@ -167,30 +153,28 @@ async function searchMusicList(query) {
 
     return results;
   } catch (error) {
-    console.error('❌ Pagalnew search list error:', error.message);
+    console.error('❌ Pagalnew search list error:', error.message || error);
     return [];
   }
 }
 
 /**
  * Fetch the full details for a specific song page.
- * @param {string} url
  */
 async function fetchSongByUrl(url) {
   try {
-    const { data: songHtml } = await axios.get(url, { headers: HEADERS, timeout: 15000 });
+    // Using cloudscraper instead of axios
+    const songHtml = await cloudscraper.get(url, { headers: HEADERS });
     const $ = cheerio.load(songHtml);
     return parseSongPage($, url);
   } catch (error) {
-    console.error('❌ Pagalnew song fetch error:', error.message);
+    console.error('❌ Pagalnew song fetch error:', error.message || error);
     return null;
   }
 }
 
 /**
- * Single-result helper (kept for backward compatibility).
- * @param {string} query
- * @param {number} index - Which result to return (default 0).
+ * Single-result helper.
  */
 async function searchMusic(query, index = 0) {
   try {

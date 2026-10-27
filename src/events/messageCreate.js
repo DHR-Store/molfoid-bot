@@ -35,11 +35,19 @@ const STICKERS = {
 
 // --- Helpers for Pagalnew ---
 function buildMusicEmbed(song) {
+  // FIX: Bypass Cloudflare hotlink protection using a free image proxy
+  let safeThumbnail = song.thumbnail;
+  if (safeThumbnail && safeThumbnail.includes('pagalnew.com')) {
+    // Strip the https:// so the proxy can read it
+    const cleanUrl = safeThumbnail.replace(/^https?:\/\//, '');
+    safeThumbnail = `https://images.weserv.nl/?url=${cleanUrl}`;
+  }
+
   const embed = new EmbedBuilder()
     .setColor(0xff69b4)
     .setTitle(song.title || 'Unknown Song')
     .setURL(song.url)
-    .setThumbnail(song.thumbnail || null)
+    .setThumbnail(safeThumbnail || null)
     .addFields(
       { name: '🎤 Singer(s)', value: song.singers || '—', inline: true },
       { name: '🎬 Movie / Album', value: song.movie || '—', inline: true },
@@ -138,7 +146,7 @@ module.exports = {
       }
 
       // ==========================================
-      // --- NEW: WALLPAPER SEARCH (WITH PAGINATION) ---
+      // --- 1. WALLPAPER SEARCH ---
       // ==========================================
       const isWallpaperReq = /^(wallpaper|wp)\s+(.+)$/i.test(prompt);
 
@@ -158,14 +166,15 @@ module.exports = {
           const start = page * itemsPerPage;
           const pageResults = allResults.slice(start, start + itemsPerPage);
 
-          const embeds = pageResults.map((wp, index) => {
-            return new EmbedBuilder()
-              .setColor(0x5865f2)
-              .setTitle(`${start + index + 1}. ${wp.title.substring(0, 80)}`)
-              .setURL(wp.pageUrl)
-              .setImage(wp.thumbUrl)
-              .setFooter({ text: 'Click the title to download in 4K' });
-          });
+          const textList = pageResults.map((wp, index) => {
+            return `**${start + index + 1}.** [${wp.title.substring(0, 80)}](${wp.pageUrl})`;
+          }).join('\n\n');
+
+          const embed = new EmbedBuilder()
+            .setColor(0x5865f2)
+            .setTitle(`🖼️ Wallpaper Search: "${query}"`)
+            .setDescription(textList || 'No results found.')
+            .setFooter({ text: `Page ${page + 1}/${totalPages} | Click titles to view` });
 
           const components = [];
           if (totalPages > 1) {
@@ -184,8 +193,8 @@ module.exports = {
           }
 
           return {
-            content: `*sends a smug sticker* Tch... here are some "${query}" wallpapers. Don't say I never do anything for you. (Page ${page + 1}/${totalPages})`,
-            embeds: embeds,
+            content: `*sends a smug sticker* Tch... here are some "${query}" wallpapers.`,
+            embeds: [embed],
             components: components
           };
         };
@@ -210,7 +219,7 @@ module.exports = {
       }
 
       // ==========================================
-      // --- NEW: IMDB MOVIE/TV SEARCH (WITH PAGINATION) ---
+      // --- 2. IMDB MOVIE/TV SEARCH ---
       // ==========================================
       const isImdbReq = /^(movie|tv|show|film)\s+(.+)$/i.test(prompt);
 
@@ -233,7 +242,7 @@ module.exports = {
           const embeds = pageResults.map((item, index) => {
             const typeEmoji = item.type === 'tvSeries' ? '📺' : item.type === 'movie' ? '🎬' : '🎞️';
             const embed = new EmbedBuilder()
-              .setColor(0xf5c518) // IMDb Yellow
+              .setColor(0xf5c518)
               .setTitle(`${typeEmoji} ${item.title} (${item.year})`)
               .setURL(`https://www.imdb.com/title/${item.id}/`)
               .setFooter({ text: `Type: ${item.type} | Click title for IMDb page` });
@@ -285,7 +294,7 @@ module.exports = {
       }
 
       // ==========================================
-      // --- 0. PLAYLIST GENERATOR ---
+      // --- 3. PLAYLIST GENERATOR ---
       // ==========================================
       const isPlaylistRequest = prompt.toLowerCase().includes('playlist') || prompt.toLowerCase().includes('mix');
 
@@ -317,9 +326,9 @@ module.exports = {
             .setDescription(songList || 'No songs found.')
             .setFooter({ text: `Page ${page + 1} of ${totalPages} | Total Songs: ${playlistData.videos.length}` });
 
-          const options = playlistData.videos.slice(0, 25).map((v, i) => ({
+          const options = pageVideos.map((v, index) => ({
             label: v.title.substring(0, 100),
-            value: String(i),
+            value: String(start + index), 
             description: `${v.author} • ${v.duration}`.substring(0, 100),
             emoji: '🎵'
           }));
@@ -368,7 +377,7 @@ module.exports = {
           } 
           else if (i.customId === 'playlist_pick') {
             await i.deferUpdate();
-            const picked = playlistData.videos[Number(i.values[0])];
+            const picked = playlistData.videos[Number(i.values[0])]; 
             const dlUrl = await fetchAudioUrl(picked.id);
             const { embed, components } = buildYTEmbed(picked, dlUrl);
 
@@ -406,7 +415,7 @@ module.exports = {
       }
 
       // ==========================================
-      // --- 1. YOUTUBE SEARCH DROPDOWN ---
+      // --- 4. YOUTUBE SEARCH DROPDOWN ---
       // ==========================================
       const isYtSearch = /^(search|find)\s+(.+?)\s+yt$/i.test(prompt);
 
@@ -439,9 +448,9 @@ module.exports = {
               );
           });
 
-          const options = results.map((v, i) => ({
+          const options = pageResults.map((v, index) => ({
             label: v.title.substring(0, 100),
-            value: String(i),
+            value: String(start + index), 
             description: `${v.author} • ${v.duration}`.substring(0, 100),
             emoji: '🎧'
           }));
@@ -512,7 +521,7 @@ module.exports = {
       }
 
       // ==========================================
-      // --- 2. YOUTUBE DIRECT DOWNLOAD ---
+      // --- 5. YOUTUBE DIRECT DOWNLOAD ---
       // ==========================================
       const isYtDirect = / yt$/i.test(prompt);
 
@@ -542,7 +551,7 @@ module.exports = {
       }
 
       // ==========================================
-      // --- 3. PAGALNEW MUSIC SEARCH ---
+      // --- 6. PAGALNEW MUSIC SEARCH (WITH YOUTUBE FALLBACK) ---
       // ==========================================
       const isMusicRequest = /\b(give|play|search|find|download)\b.*\b(song|music|mp3)\b/i.test(prompt) || /^play\s+/i.test(prompt) || prompt.toLowerCase().includes('song');
 
@@ -551,7 +560,47 @@ module.exports = {
         if (!query) query = prompt;
 
         const list = await searchMusicList(query);
-        if (!list || list.length === 0) return message.reply(`*sends a pouting sticker* Tch... I couldn't find any song called "${query}", baka.`);
+        
+        // --- FALLBACK TO YOUTUBE IF PAGALNEW FAILS OR IS BLOCKED ---
+        if (!list || list.length === 0) {
+          console.log(`⚠️ Pagalnew failed/blocked for "${query}", falling back to YouTube.`);
+          const ytResults = await searchYouTube(`${query} song`);
+          
+          if (ytResults.length > 0) {
+            const picked = ytResults[0];
+            const dlUrl = await fetchAudioUrl(picked.id);
+            const { embed, components } = buildYTEmbed(picked, dlUrl);
+
+            if (dlUrl) {
+              try {
+                const response = await axios.get(dlUrl, { responseType: 'arraybuffer' });
+                const audioBuffer = Buffer.from(response.data);
+                const attachment = new AttachmentBuilder(audioBuffer, { name: `${picked.title.substring(0, 50)}.mp3` });
+
+                return message.reply({ 
+                  content: `*sends a smug sticker* Tch... the download site is being annoying, so I found it on YouTube. Here:`, 
+                  embeds: [embed], 
+                  components, 
+                  files: [attachment] 
+                });
+              } catch (err) {
+                return message.reply({ 
+                  content: `*sends a smug sticker* Tch... the download site is being annoying, so I found it on YouTube. Here:`, 
+                  embeds: [embed], 
+                  components 
+                });
+              }
+            } else {
+              return message.reply({ 
+                content: `*sends a smug sticker* Tch... the download site is being annoying, so I found it on YouTube. Here:`, 
+                embeds: [embed], 
+                components 
+              });
+            }
+          } else {
+            return message.reply(`*sends a pouting sticker* Tch... I couldn't find any song called "${query}", baka.`);
+          }
+        }
 
         const first = await fetchSongByUrl(list[0].url);
         if (!first) return message.reply("*sends a broken sticker* The download site gave me garbage data. Try again later, idiot.");
@@ -585,10 +634,9 @@ module.exports = {
       }
 
       // ==========================================
-      // --- 4. NORMAL AI CHAT (WITH GIFs & MEMORY) ---
+      // --- 7. NORMAL AI CHAT (WITH GIFs & MEMORY) ---
       // ==========================================
       
-      // NOW apply the multi-mention formatting so it doesn't break the commands above
       let aiPrompt = prompt;
       if (otherMentions.size > 0) {
         const lastMention = Array.from(otherMentions.values()).pop();
@@ -642,11 +690,13 @@ module.exports = {
       if (gifUrl) {
         const embed = new EmbedBuilder()
           .setColor(0xff0000)
-          .setDescription(firstPayload.content || '*sends an angry sticker* Here is your stupid GIF.')
           .setImage(gifUrl)
           .setFooter({ text: `Requested by ${message.author.username}` });
+        
+        if (!firstPayload.content) {
+          firstPayload.content = '*sends an angry sticker* Here is your stupid GIF.';
+        }
         firstPayload.embeds = [embed];
-        delete firstPayload.content; 
       }
 
       if (stickerId) firstPayload.stickers = [stickerId];
