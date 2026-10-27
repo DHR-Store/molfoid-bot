@@ -18,9 +18,6 @@ const { searchIMDb } = require('../utils/tvshow');
 const cooldowns = new Map();
 const COOLDOWN_MS = 3000;
 const chatHistories = new Map();
-
-// --- AUTO-PLAYLIST STORAGE ---
-// This acts as your "Public Playlist". It stores up to 100 links in memory.
 const autoPlaylist = [];
 
 const STICKERS = {
@@ -29,22 +26,22 @@ const STICKERS = {
   'angry-pout': '123456789012345678', blank: '123456789012345678', broken: '123456789012345678'
 };
 
-// Strict 15s timeout to prevent server crashes
+// OPTIMIZED: 10-second strict timeout to prevent Suga server from hanging
 async function downloadAudioBuffer(url) {
   if (!url) return null;
   try {
     const response = await axios.get(url, {
       responseType: 'arraybuffer',
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': '*/*',
         'Accept-Encoding': 'identity' 
       },
-      timeout: 15000
+      timeout: 10000 // 10 seconds max!
     });
     return Buffer.from(response.data);
   } catch (error) {
-    console.error('❌ Audio download failed or timed out:', error.message);
+    console.log('⚠️ Audio download timed out, skipping inline player to save time.');
     return null;
   }
 }
@@ -70,7 +67,6 @@ function buildMusicEmbed(song, attachment) {
   const components = [];
   const buttons = [];
 
-  // 1. FLAC Download Button
   if (song.downloadUrl) {
     let finalUrl = song.downloadUrl;
     if (!finalUrl.includes('forceDownload=true')) {
@@ -79,7 +75,6 @@ function buildMusicEmbed(song, attachment) {
     buttons.push(new ButtonBuilder().setLabel('🎧 Download FLAC').setStyle(ButtonStyle.Link).setURL(finalUrl));
   }
 
-  // 2. YouTube Fallback Button
   if (song.url) {
     buttons.push(new ButtonBuilder().setLabel('🌐 Watch on YouTube').setStyle(ButtonStyle.Link).setURL(song.url));
   }
@@ -109,44 +104,43 @@ module.exports = {
     if (message.author.bot || message.system) return;
 
     // ==========================================
-    // --- AUTO-SCANNER FOR LINKS & AUDIO FILES ---
+    // --- FAST BACKGROUND AUTO-SCANNER ---
     // ==========================================
-    try {
-      // 1. Check for YouTube Links
-      const urlRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\/[^\s]+)/gi;
-      const ytLinks = message.content.match(urlRegex);
-      
-      if (ytLinks) {
-        ytLinks.forEach(link => {
-          if (!autoPlaylist.includes(link) && autoPlaylist.length < 100) {
-            autoPlaylist.push(link);
-            console.log(`[Auto-Scan] Saved YT Link: ${link}`);
-          }
-        });
-      }
+    // setImmediate ensures this runs in the background and NEVER blocks commands
+    setImmediate(async () => {
+      try {
+        const urlRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\/[^\s]+)/gi;
+        const ytLinks = message.content.match(urlRegex);
+        
+        if (ytLinks) {
+          ytLinks.forEach(link => {
+            if (!autoPlaylist.includes(link) && autoPlaylist.length < 100) {
+              autoPlaylist.push(link);
+              console.log(`[Auto-Scan] Saved YT Link: ${link}`);
+            }
+          });
+        }
 
-      // 2. Check for Audio Attachments or Spotify/Other Links
-      if (message.attachments.size > 0) {
-        for (const [id, att] of message.attachments) {
-          if (att.name && att.name.match(/\.(mp3|m4a|flac|wav|ogg)$/i)) {
-            // Search YouTube for the file name to get a YT link
-            const query = att.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, ' ');
-            const result = await searchYouTube(`${query} song`);
-            if (result && result.length > 0) {
-              const foundLink = result[0].url;
-              if (!autoPlaylist.includes(foundLink) && autoPlaylist.length < 100) {
-                autoPlaylist.push(foundLink);
-                console.log(`[Auto-Scan] Matched Audio File "${att.name}" to: ${foundLink}`);
+        if (message.attachments.size > 0) {
+          for (const [id, att] of message.attachments) {
+            if (att.name && att.name.match(/\.(mp3|m4a|flac|wav|ogg)$/i)) {
+              const query = att.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, ' ');
+              const result = await searchYouTube(`${query} song`);
+              if (result && result.length > 0) {
+                const foundLink = result[0].url;
+                if (!autoPlaylist.includes(foundLink) && autoPlaylist.length < 100) {
+                  autoPlaylist.push(foundLink);
+                  console.log(`[Auto-Scan] Matched Audio File to: ${foundLink}`);
+                }
               }
             }
           }
         }
+      } catch (e) {
+        console.error('Auto-Scanner Error:', e.message);
       }
-    } catch (e) {
-      console.error('Auto-Scanner Error:', e.message);
-    }
+    });
 
-    // --- Check if the bot was mentioned ---
     const isDM = !message.guild;
     if (!isDM && !message.mentions.has(message.client.user.id)) return;
 
@@ -186,7 +180,6 @@ module.exports = {
           return message.reply("*sends a smug sticker* Tch... The playlist is empty. Drop some links or audio files, dummy.");
         }
         
-        // Show the last 10 saved links
         const list = autoPlaylist.slice(-10).map((url, i) => `**${i + 1}.** ${url}`).join('\n');
         const embed = new EmbedBuilder()
           .setColor(0x00ffcc)
