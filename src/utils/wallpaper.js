@@ -1,37 +1,31 @@
 const axios = require('axios');
-const cheerio = require('cheerio');
 
 async function searchWallpapers(query) {
   try {
-    const url = `https://4kwallpapers.com/search/?q=${encodeURIComponent(query)}`;
+    const url = `https://wallhaven.cc/api/v1/search?q=${encodeURIComponent(query)}&sorting=toplist&order=desc`;
     
     const { data } = await axios.get(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'MolfoidBot/1.0 (Discord Bot)'
       }
     });
 
-    const $ = cheerio.load(data);
-    const results = [];
+    if (!data || !data.data) return [];
 
-    $('.wallpapers__item').each((i, el) => {
-      const pageUrl = $(el).find('.wallpapers__canvas_image').attr('href');
-      const thumbUrl = $(el).find('img').attr('src');
-      const title = $(el).find('.title2').text().trim() || '4K Wallpaper';
-
-      if (pageUrl && thumbUrl) {
-        results.push({
-          title,
-          pageUrl: `https://4kwallpapers.com${pageUrl}`,
-          thumbUrl: `https://4kwallpapers.com${thumbUrl}`
-        });
-      }
+    return data.data.slice(0, 20).map(item => {
+      return {
+        title: `${query} Wallpaper (${item.resolution})`,
+        pageUrl: item.url,           
+        imageUrl: item.path,         
+        thumbUrl: item.thumbs.large, 
+        resolution: item.resolution,
+        // Safely fallback to 'Unknown' if the uploader is hidden or missing
+        uploader: item.uploader?.username || 'Unknown' 
+      };
     });
 
-    // Return up to 20 results for pagination
-    return results.slice(0, 20);
   } catch (error) {
-    console.error('❌ Wallpaper scrape error:', error.message);
+    console.error('❌ Wallpaper API error:', error.message);
     return [];
   }
 }

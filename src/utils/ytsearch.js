@@ -9,10 +9,10 @@ async function searchYouTube(query) {
     return result.videos.slice(0, 25).map(v => ({
       title: v.title,
       id: v.videoId,
-      url: v.url,
+      url: v.videoId ? `https://www.youtube.com/watch?v=${v.videoId}` : v.url,
       thumbnail: v.thumbnail,
-      duration: v.timestamp,
-      author: v.author.name
+      duration: v.timestamp || '--:--',
+      author: v.author ? v.author.name : 'Unknown'
     }));
   } catch (error) {
     console.error('❌ YT Search error:', error);
