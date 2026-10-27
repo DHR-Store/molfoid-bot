@@ -14,13 +14,10 @@ const HEADERS = {
   'Upgrade-Insecure-Requests': '1'
 };
 
-// Helper to add proxy to options if it exists
 function getRequestOptions() {
   const options = { headers: HEADERS };
   if (PROXY_URL) {
     options.proxy = PROXY_URL;
-  } else {
-    console.warn('⚠️ PROXY_URL is not set. Requests will be made from the server IP and will likely be blocked by Cloudflare.');
   }
   return options;
 }
@@ -117,14 +114,6 @@ function parseSongPage($, url) {
 async function searchMusicList(query) {
   try {
     const searchUrl = `${BASE_URL}/search.php?find=${encodeURIComponent(query)}`;
-    
-    console.log(`🔎 Searching Pagalnew for: "${query}"`);
-    if (PROXY_URL) {
-      console.log(`🔌 Using proxy: ${PROXY_URL.substring(0, 20)}...`);
-    } else {
-      console.log('🔌 No proxy configured. This request will likely be blocked.');
-    }
-
     const searchHtml = await cloudscraper.get(searchUrl, getRequestOptions());
 
     const $ = cheerio.load(searchHtml);
@@ -146,9 +135,9 @@ async function searchMusicList(query) {
       }
 
       const artist = $(el).find('.h5').first().text().replace(/\s+/g, ' ').trim();
-
       const img = $(el).find('img').first();
       let thumbnail = img.attr('data-src') || img.attr('src') || null;
+      
       if (thumbnail && thumbnail.startsWith('./')) {
         thumbnail = BASE_URL + thumbnail.substring(1);
       }
@@ -161,9 +150,11 @@ async function searchMusicList(query) {
 
     return results;
   } catch (error) {
-    console.error('❌ Pagalnew search list error:', error.message || error);
-    if (error.statusCode === 403) {
-      console.error('⚠️ This is a Cloudflare block. Please ensure you are using a residential proxy, not a datacenter proxy.');
+    // If Cloudflare blocks the request (403), just return empty so the bot falls back to YouTube
+    if (error.statusCode === 403 || error.message.includes('403')) {
+      console.log(`⚠️ Pagalnew blocked the server IP. Falling back to YouTube...`);
+    } else {
+      console.error('❌ Pagalnew search error:', error.message || error);
     }
     return [];
   }
@@ -183,13 +174,9 @@ async function fetchSongByUrl(url) {
 async function searchMusic(query, index = 0) {
   try {
     const list = await searchMusicList(query);
-    if (!list[index]) {
-      console.error('⚠️ No results for:', query);
-      return null;
-    }
+    if (!list[index]) return null;
     return await fetchSongByUrl(list[index].url);
   } catch (error) {
-    console.error('❌ Music search error:', error.message);
     return null;
   }
 }
