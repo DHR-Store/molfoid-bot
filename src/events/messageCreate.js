@@ -33,12 +33,24 @@ const STICKERS = {
   broken: '123456789012345678'
 };
 
+// Helper to download the audio buffer robustly
+async function downloadAudioBuffer(url) {
+  const response = await axios.get(url, {
+    responseType: 'arraybuffer',
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'Accept': '*/*',
+      'Accept-Encoding': 'identity' // Prevents gzip issues with audio files
+    },
+    timeout: 30000 // 30 seconds timeout
+  });
+  return Buffer.from(response.data);
+}
+
 // --- Helpers for Pagalnew ---
 function buildMusicEmbed(song) {
-  // FIX: Bypass Cloudflare hotlink protection using a free image proxy
   let safeThumbnail = song.thumbnail;
   if (safeThumbnail && safeThumbnail.includes('pagalnew.com')) {
-    // Strip the https:// so the proxy can read it
     const cleanUrl = safeThumbnail.replace(/^https?:\/\//, '');
     safeThumbnail = `https://images.weserv.nl/?url=${cleanUrl}`;
   }
@@ -383,8 +395,7 @@ module.exports = {
 
             if (dlUrl) {
               try {
-                const response = await axios.get(dlUrl, { responseType: 'arraybuffer' });
-                const audioBuffer = Buffer.from(response.data);
+                const audioBuffer = await downloadAudioBuffer(dlUrl);
                 const attachment = new AttachmentBuilder(audioBuffer, { name: `${picked.title.substring(0, 50)}.mp3` });
 
                 await i.editReply({ 
@@ -394,6 +405,7 @@ module.exports = {
                   files: [attachment]
                 });
               } catch (err) {
+                console.error('Download error:', err.message);
                 await i.editReply({ 
                   content: `▶️ **Direct Link:**\n${dlUrl}\n\n*(Click the song title above to open on YouTube)*`, 
                   embeds: [embed], 
@@ -502,12 +514,12 @@ module.exports = {
 
             if (dlUrl) {
               try {
-                const response = await axios.get(dlUrl, { responseType: 'arraybuffer' });
-                const audioBuffer = Buffer.from(response.data);
+                const audioBuffer = await downloadAudioBuffer(dlUrl);
                 const attachment = new AttachmentBuilder(audioBuffer, { name: `${picked.title.substring(0, 50)}.mp3` });
 
                 await i.editReply({ content: `▶️ **Audio Player:**`, embeds: [embed], components, files: [attachment] });
               } catch (err) {
+                console.error('Download error:', err.message);
                 await i.editReply({ content: `▶️ **Direct Link:**\n${dlUrl}`, embeds: [embed], components });
               }
             } else {
@@ -537,12 +549,12 @@ module.exports = {
 
         if (dlUrl) {
           try {
-             const response = await axios.get(dlUrl, { responseType: 'arraybuffer' });
-             const audioBuffer = Buffer.from(response.data);
+             const audioBuffer = await downloadAudioBuffer(dlUrl);
              const attachment = new AttachmentBuilder(audioBuffer, { name: `${picked.title.substring(0, 50)}.mp3` });
 
              return message.reply({ content: `▶️ **Audio Player:**`, embeds: [embed], components, files: [attachment] });
           } catch (err) {
+             console.error('Download error:', err.message);
              return message.reply({ content: `▶️ **Direct Link:**\n${dlUrl}`, embeds: [embed], components });
           }
         } else {
@@ -561,7 +573,6 @@ module.exports = {
 
         const list = await searchMusicList(query);
         
-        // --- FALLBACK TO YOUTUBE IF PAGALNEW FAILS OR IS BLOCKED ---
         if (!list || list.length === 0) {
           console.log(`⚠️ Pagalnew failed/blocked for "${query}", falling back to YouTube.`);
           const ytResults = await searchYouTube(`${query} song`);
@@ -573,8 +584,7 @@ module.exports = {
 
             if (dlUrl) {
               try {
-                const response = await axios.get(dlUrl, { responseType: 'arraybuffer' });
-                const audioBuffer = Buffer.from(response.data);
+                const audioBuffer = await downloadAudioBuffer(dlUrl);
                 const attachment = new AttachmentBuilder(audioBuffer, { name: `${picked.title.substring(0, 50)}.mp3` });
 
                 return message.reply({ 
@@ -584,6 +594,7 @@ module.exports = {
                   files: [attachment] 
                 });
               } catch (err) {
+                console.error('Download error:', err.message);
                 return message.reply({ 
                   content: `*sends a smug sticker* Tch... the download site is being annoying, so I found it on YouTube. Here:`, 
                   embeds: [embed], 

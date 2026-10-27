@@ -1,5 +1,6 @@
 const cloudscraper = require('cloudscraper');
 const cheerio = require('cheerio');
+const { PROXY_URL } = require('./proxy'); 
 
 const BASE_URL = 'https://pagalnew.com';
 const HEADERS = {
@@ -13,6 +14,17 @@ const HEADERS = {
   'Upgrade-Insecure-Requests': '1'
 };
 
+// Helper to add proxy to options if it exists
+function getRequestOptions() {
+  const options = { headers: HEADERS };
+  if (PROXY_URL) {
+    options.proxy = PROXY_URL;
+  } else {
+    console.warn('⚠️ PROXY_URL is not set. Requests will be made from the server IP and will likely be blocked by Cloudflare.');
+  }
+  return options;
+}
+
 function toAbsolute(href) {
   if (!href) return null;
   if (href.startsWith('http://') || href.startsWith('https://')) return href;
@@ -20,11 +32,7 @@ function toAbsolute(href) {
   return BASE_URL + (href.startsWith('/') ? href : '/' + href);
 }
 
-/**
- * Parse a song page into metadata + download links.
- */
 function parseSongPage($, url) {
-  // Title
   let title = $('h1').first().text().replace(/\s+/g, ' ').trim();
   if (!title) {
     title =
@@ -34,7 +42,6 @@ function parseSongPage($, url) {
         .trim() || 'Unknown Song';
   }
 
-  // Thumbnail
   let thumbnail = $('meta[property="og:image"]').attr('content') || '';
   if (thumbnail.startsWith('./')) thumbnail = BASE_URL + thumbnail.substring(1);
   if (thumbnail && !thumbnail.startsWith('http')) thumbnail = toAbsolute(thumbnail);
@@ -42,7 +49,6 @@ function parseSongPage($, url) {
     thumbnail = toAbsolute($('img.b-lazy').first().attr('data-src')) || null;
   }
 
-  // Download links
   let download320 = null;
   let download128 = null;
   $('a.dbutton, a[href*="-download"]').each((_, el) => {
@@ -55,7 +61,6 @@ function parseSongPage($, url) {
     }
   });
 
-  // Metadata
   const meta = {};
   $('b').each((_, el) => {
     const rawLabel = $(el).text();
@@ -109,15 +114,18 @@ function parseSongPage($, url) {
   };
 }
 
-/**
- * Search pagalnew and return a list of ALL matching songs.
- */
 async function searchMusicList(query) {
   try {
     const searchUrl = `${BASE_URL}/search.php?find=${encodeURIComponent(query)}`;
     
-    // Using cloudscraper instead of axios
-    const searchHtml = await cloudscraper.get(searchUrl, { headers: HEADERS });
+    console.log(`🔎 Searching Pagalnew for: "${query}"`);
+    if (PROXY_URL) {
+      console.log(`🔌 Using proxy: ${PROXY_URL.substring(0, 20)}...`);
+    } else {
+      console.log('🔌 No proxy configured. This request will likely be blocked.');
+    }
+
+    const searchHtml = await cloudscraper.get(searchUrl, getRequestOptions());
 
     const $ = cheerio.load(searchHtml);
     const results = [];
@@ -154,17 +162,16 @@ async function searchMusicList(query) {
     return results;
   } catch (error) {
     console.error('❌ Pagalnew search list error:', error.message || error);
+    if (error.statusCode === 403) {
+      console.error('⚠️ This is a Cloudflare block. Please ensure you are using a residential proxy, not a datacenter proxy.');
+    }
     return [];
   }
 }
 
-/**
- * Fetch the full details for a specific song page.
- */
 async function fetchSongByUrl(url) {
   try {
-    // Using cloudscraper instead of axios
-    const songHtml = await cloudscraper.get(url, { headers: HEADERS });
+    const songHtml = await cloudscraper.get(url, getRequestOptions());
     const $ = cheerio.load(songHtml);
     return parseSongPage($, url);
   } catch (error) {
@@ -173,9 +180,6 @@ async function fetchSongByUrl(url) {
   }
 }
 
-/**
- * Single-result helper.
- */
 async function searchMusic(query, index = 0) {
   try {
     const list = await searchMusicList(query);
