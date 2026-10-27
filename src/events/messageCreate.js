@@ -10,7 +10,6 @@ const axios = require('axios');
 const { askGroq } = require('../utils/groq');
 const { searchGif } = require('../utils/gif');
 const { searchMusicList, fetchSongByUrl } = require('../utils/music');
-const { fetchAudioUrl } = require('../utils/ytmusic');
 const { searchYouTube } = require('../utils/ytsearch');
 const { getPlaylist } = require('../utils/playlist'); 
 const { searchWallpapers } = require('../utils/wallpaper'); 
@@ -18,23 +17,21 @@ const { searchIMDb } = require('../utils/tvshow');
 
 const cooldowns = new Map();
 const COOLDOWN_MS = 3000;
-
 const chatHistories = new Map();
 
+// --- AUTO-PLAYLIST STORAGE ---
+// This acts as your "Public Playlist". It stores up to 100 links in memory.
+const autoPlaylist = [];
+
 const STICKERS = {
-  teasing: '123456789012345678',
-  smug: '123456789012345678',
-  pouting: '123456789012345678',
-  mischievous: '123456789012345678',
-  blushing: '123456789012345678',
-  comforting: '123456789012345678',
-  'angry-pout': '123456789012345678',
-  blank: '123456789012345678',
-  broken: '123456789012345678'
+  teasing: '123456789012345678', smug: '123456789012345678', pouting: '123456789012345678',
+  mischievous: '123456789012345678', blushing: '123456789012345678', comforting: '123456789012345678',
+  'angry-pout': '123456789012345678', blank: '123456789012345678', broken: '123456789012345678'
 };
 
-// OPTIMIZED: Strict 15s timeout to prevent Suga server from killing the bot (SIGTERM)
+// Strict 15s timeout to prevent server crashes
 async function downloadAudioBuffer(url) {
+  if (!url) return null;
   try {
     const response = await axios.get(url, {
       responseType: 'arraybuffer',
@@ -43,7 +40,7 @@ async function downloadAudioBuffer(url) {
         'Accept': '*/*',
         'Accept-Encoding': 'identity' 
       },
-      timeout: 15000 // 15 seconds max!
+      timeout: 15000
     });
     return Buffer.from(response.data);
   } catch (error) {
@@ -52,78 +49,58 @@ async function downloadAudioBuffer(url) {
   }
 }
 
-// --- Helpers for Pagalnew ---
-function buildMusicEmbed(song) {
-  let safeThumbnail = song.thumbnail;
-  if (safeThumbnail && safeThumbnail.includes('pagalnew.com')) {
-    const cleanUrl = safeThumbnail.replace(/^https?:\/\//, '');
-    safeThumbnail = `https://images.weserv.nl/?url=${cleanUrl}`;
-  }
-
+function buildMusicEmbed(song, attachment) {
   const embed = new EmbedBuilder()
-    .setColor(0xff69b4)
+    .setColor(0x00ffcc)
     .setTitle(song.title || 'Unknown Song')
     .setURL(song.url)
-    .setThumbnail(safeThumbnail || null)
+    .setThumbnail(song.thumbnail || null)
     .addFields(
-      { name: '🎤 Singer(s)', value: song.singers || '—', inline: true },
-      { name: '🎬 Movie / Album', value: song.movie || '—', inline: true },
-      { name: '🎵 Composer', value: song.composer || '—', inline: true }
+      { name: '🎤 Artist / Channel', value: song.singers || '—', inline: true },
+      { name: '⏱️ Duration', value: song.duration || '—', inline: true }
     )
-    .setFooter({ text: 'Pagalnew Download' });
+    .setFooter({ text: song.isFlac ? 'High-Quality FLAC Available' : 'YouTube Stream' });
 
-  if (song.starring) embed.addFields({ name: '⭐ Starring', value: song.starring, inline: false });
-  if (song.releasedOn) embed.addFields({ name: '📅 Released', value: song.releasedOn, inline: true });
-  return embed;
-}
-
-function buildMusicRows(list, song) {
-  const components = [];
-  if (list.length > 1) {
-    const options = list.slice(0, 25).map((item, idx) => ({
-      label: (item.title || `Result ${idx + 1}`).substring(0, 100),
-      value: String(idx),
-      description: item.artist ? item.artist.substring(0, 100) : undefined,
-      emoji: '🎵'
-    }));
-    const select = new StringSelectMenuBuilder()
-      .setCustomId('music_pick_msg')
-      .setPlaceholder(`📋 ${list.length} results — pick a song`)
-      .addOptions(options);
-    components.push(new ActionRowBuilder().addComponents(select));
-  }
-
-  const buttons = [];
-  if (song.download320) buttons.push(new ButtonBuilder().setLabel('💎 320 kbps').setStyle(ButtonStyle.Link).setURL(song.download320));
-  if (song.download128) buttons.push(new ButtonBuilder().setLabel('🎧 128 kbps').setStyle(ButtonStyle.Link).setURL(song.download128));
-  if (buttons.length === 0) buttons.push(new ButtonBuilder().setLabel('🌐 Open Page').setStyle(ButtonStyle.Link).setURL(song.url));
-  
-  components.push(new ActionRowBuilder().addComponents(...buttons));
-  return components;
-}
-
-// --- Helper for YT Embed ---
-function buildYTEmbed(video, dlUrl) {
-  const embed = new EmbedBuilder()
-    .setColor(0xff0000)
-    .setTitle(video.title)
-    .setURL(video.url)
-    .setThumbnail(video.thumbnail)
-    .addFields(
-      { name: '👤 Channel', value: video.author, inline: true },
-      { name: '⏱️ Duration', value: video.duration, inline: true }
-    )
-    .setFooter({ text: 'YouTube MP3 Download' });
-
-  const components = [];
-  if (dlUrl) {
-    components.push(new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setLabel('🎧 Direct Download (320kbps)').setStyle(ButtonStyle.Link).setURL(dlUrl)
-    ));
+  if (attachment) {
+    embed.setDescription('▶️ *Inline audio player attached.*');
   } else {
-    embed.setDescription('❌ Failed to generate download link (API Error).');
+    embed.setDescription('⚠️ *Player unavailable (timeout). Use buttons below.*');
   }
+
+  const components = [];
+  const buttons = [];
+
+  // 1. FLAC Download Button
+  if (song.downloadUrl) {
+    let finalUrl = song.downloadUrl;
+    if (!finalUrl.includes('forceDownload=true')) {
+      finalUrl += finalUrl.includes('?') ? '&forceDownload=true' : '?forceDownload=true';
+    }
+    buttons.push(new ButtonBuilder().setLabel('🎧 Download FLAC').setStyle(ButtonStyle.Link).setURL(finalUrl));
+  }
+
+  // 2. YouTube Fallback Button
+  if (song.url) {
+    buttons.push(new ButtonBuilder().setLabel('🌐 Watch on YouTube').setStyle(ButtonStyle.Link).setURL(song.url));
+  }
+
+  if (buttons.length > 0) {
+    components.push(new ActionRowBuilder().addComponents(...buttons));
+  }
+
   return { embed, components };
+}
+
+function buildMusicRows(list) {
+  if (!list || list.length <= 1) return [];
+  const options = list.slice(0, 25).map((item, idx) => ({
+    label: (item.title || `Result ${idx + 1}`).substring(0, 100),
+    value: String(idx),
+    description: item.artist ? item.artist.substring(0, 100) : undefined,
+    emoji: '🎵'
+  }));
+  const select = new StringSelectMenuBuilder().setCustomId('music_pick_msg').setPlaceholder(`📋 ${list.length} results`).addOptions(options);
+  return [new ActionRowBuilder().addComponents(select)];
 }
 
 module.exports = {
@@ -131,6 +108,45 @@ module.exports = {
   async execute(message) {
     if (message.author.bot || message.system) return;
 
+    // ==========================================
+    // --- AUTO-SCANNER FOR LINKS & AUDIO FILES ---
+    // ==========================================
+    try {
+      // 1. Check for YouTube Links
+      const urlRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)\/[^\s]+)/gi;
+      const ytLinks = message.content.match(urlRegex);
+      
+      if (ytLinks) {
+        ytLinks.forEach(link => {
+          if (!autoPlaylist.includes(link) && autoPlaylist.length < 100) {
+            autoPlaylist.push(link);
+            console.log(`[Auto-Scan] Saved YT Link: ${link}`);
+          }
+        });
+      }
+
+      // 2. Check for Audio Attachments or Spotify/Other Links
+      if (message.attachments.size > 0) {
+        for (const [id, att] of message.attachments) {
+          if (att.name && att.name.match(/\.(mp3|m4a|flac|wav|ogg)$/i)) {
+            // Search YouTube for the file name to get a YT link
+            const query = att.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, ' ');
+            const result = await searchYouTube(`${query} song`);
+            if (result && result.length > 0) {
+              const foundLink = result[0].url;
+              if (!autoPlaylist.includes(foundLink) && autoPlaylist.length < 100) {
+                autoPlaylist.push(foundLink);
+                console.log(`[Auto-Scan] Matched Audio File "${att.name}" to: ${foundLink}`);
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Auto-Scanner Error:', e.message);
+    }
+
+    // --- Check if the bot was mentioned ---
     const isDM = !message.guild;
     if (!isDM && !message.mentions.has(message.client.user.id)) return;
 
@@ -160,6 +176,25 @@ module.exports = {
       if (prompt.toLowerCase().includes('reset memory') || prompt.toLowerCase() === 'reset') {
         chatHistories.delete(message.author.id);
         return message.reply("*sends a smug sticker* Tch... fine, I forgot everything we talked about. Happy now, idiot?");
+      }
+
+      // ==========================================
+      // --- AUTO-PLAYLIST COMMAND ---
+      // ==========================================
+      if (prompt.toLowerCase() === 'auto playlist' || prompt.toLowerCase() === 'saved songs') {
+        if (autoPlaylist.length === 0) {
+          return message.reply("*sends a smug sticker* Tch... The playlist is empty. Drop some links or audio files, dummy.");
+        }
+        
+        // Show the last 10 saved links
+        const list = autoPlaylist.slice(-10).map((url, i) => `**${i + 1}.** ${url}`).join('\n');
+        const embed = new EmbedBuilder()
+          .setColor(0x00ffcc)
+          .setTitle('🎶 Auto-Saved Public Playlist')
+          .setDescription(list)
+          .setFooter({ text: `Total links saved: ${autoPlaylist.length}` });
+          
+        return message.reply({ embeds: [embed] });
       }
 
       // ==========================================
@@ -196,16 +231,8 @@ module.exports = {
           const components = [];
           if (totalPages > 1) {
             components.push(new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setCustomId('wp_prev')
-                .setLabel('◀️ Previous')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(page === 0),
-              new ButtonBuilder()
-                .setCustomId('wp_next')
-                .setLabel('Next ▶️')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(page === totalPages - 1)
+              new ButtonBuilder().setCustomId('wp_prev').setLabel('◀️ Previous').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+              new ButtonBuilder().setCustomId('wp_next').setLabel('Next ▶️').setStyle(ButtonStyle.Secondary).setDisabled(page === totalPages - 1)
             ));
           }
 
@@ -271,16 +298,8 @@ module.exports = {
           const components = [];
           if (totalPages > 1) {
             components.push(new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setCustomId('imdb_prev')
-                .setLabel('◀️ Previous')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(page === 0),
-              new ButtonBuilder()
-                .setCustomId('imdb_next')
-                .setLabel('Next ▶️')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(page === totalPages - 1)
+              new ButtonBuilder().setCustomId('imdb_prev').setLabel('◀️ Previous').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+              new ButtonBuilder().setCustomId('imdb_next').setLabel('Next ▶️').setStyle(ButtonStyle.Secondary).setDisabled(page === totalPages - 1)
             ));
           }
 
@@ -313,7 +332,7 @@ module.exports = {
       // ==========================================
       // --- 3. PLAYLIST GENERATOR ---
       // ==========================================
-      const isPlaylistRequest = prompt.toLowerCase().includes('playlist') || prompt.toLowerCase().includes('mix');
+      const isPlaylistRequest = prompt.toLowerCase().includes('playlist') && !prompt.toLowerCase().includes('auto');
 
       if (isPlaylistRequest) {
         let query = prompt.replace(/\b(playlist|mix|make|a|of|the|music|songs?)\b/gi, '').replace(/\s+/g, ' ').trim();
@@ -359,16 +378,8 @@ module.exports = {
 
           if (totalPages > 1) {
             components.push(new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setCustomId('playlist_prev')
-                .setLabel('◀️ Previous')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(page === 0),
-              new ButtonBuilder()
-                .setCustomId('playlist_next')
-                .setLabel('Next ▶️')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(page === totalPages - 1)
+              new ButtonBuilder().setCustomId('playlist_prev').setLabel('◀️ Previous').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+              new ButtonBuilder().setCustomId('playlist_next').setLabel('Next ▶️').setStyle(ButtonStyle.Secondary).setDisabled(page === totalPages - 1)
             ));
           }
 
@@ -395,32 +406,19 @@ module.exports = {
           else if (i.customId === 'playlist_pick') {
             await i.deferUpdate();
             const picked = playlistData.videos[Number(i.values[0])]; 
-            const dlUrl = await fetchAudioUrl(picked.id);
-            const { embed, components } = buildYTEmbed(picked, dlUrl);
+            const song = await fetchSongByUrl(picked.url);
 
-            if (dlUrl) {
-              const audioBuffer = await downloadAudioBuffer(dlUrl);
-              if (audioBuffer) {
-                const attachment = new AttachmentBuilder(audioBuffer, { name: `${picked.title.substring(0, 50)}.mp3` });
-                await i.editReply({ 
-                  content: `▶️ **Now Playing from Playlist:**\n*(Click the song title above to open on YouTube)*`, 
-                  embeds: [embed], 
-                  components,
-                  files: [attachment]
-                });
-              } else {
-                await i.editReply({ 
-                  content: `▶️ **Direct Link:**\n${dlUrl}\n\n*(Click the song title above to open on YouTube)*`, 
-                  embeds: [embed], 
-                  components 
-                });
-              }
+            if (song) {
+              const buffer = await downloadAudioBuffer(song.playUrl);
+              const attachment = buffer ? new AttachmentBuilder(buffer, { name: `${song.title.substring(0, 30)}.m4a` }) : null;
+              const { embed, components } = buildMusicEmbed(song, attachment);
+
+              const payload = { content: `▶️ **Now Playing:**`, embeds: [embed], components };
+              if (attachment) payload.files = [attachment];
+
+              await i.editReply(payload);
             } else {
-              await i.editReply({ 
-                content: `*sends a smug sticker* Fine, here's "${picked.title}".`, 
-                embeds: [embed], 
-                components 
-              });
+              await i.editReply({ content: `*sends a broken sticker* Failed to get the link.` });
             }
           }
         });
@@ -479,16 +477,8 @@ module.exports = {
 
           if (totalPages > 1) {
             const paginationRow = new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setCustomId('yt_prev')
-                .setLabel('◀️ Previous')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(page === 0),
-              new ButtonBuilder()
-                .setCustomId('yt_next')
-                .setLabel('Next ▶️')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(page === totalPages - 1)
+              new ButtonBuilder().setCustomId('yt_prev').setLabel('◀️ Previous').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+              new ButtonBuilder().setCustomId('yt_next').setLabel('Next ▶️').setStyle(ButtonStyle.Secondary).setDisabled(page === totalPages - 1)
             );
             components.push(paginationRow);
           }
@@ -512,19 +502,19 @@ module.exports = {
           else if (i.customId === 'yt_search_pick') {
             await i.deferUpdate();
             const picked = results[Number(i.values[0])];
-            const dlUrl = await fetchAudioUrl(picked.id);
-            const { embed, components } = buildYTEmbed(picked, dlUrl);
+            const song = await fetchSongByUrl(picked.url);
 
-            if (dlUrl) {
-              const audioBuffer = await downloadAudioBuffer(dlUrl);
-              if (audioBuffer) {
-                const attachment = new AttachmentBuilder(audioBuffer, { name: `${picked.title.substring(0, 50)}.mp3` });
-                await i.editReply({ content: `▶️ **Audio Player:**`, embeds: [embed], components, files: [attachment] });
-              } else {
-                await i.editReply({ content: `▶️ **Direct Link:**\n${dlUrl}`, embeds: [embed], components });
-              }
+            if (song) {
+              const buffer = await downloadAudioBuffer(song.playUrl);
+              const attachment = buffer ? new AttachmentBuilder(buffer, { name: `${song.title.substring(0, 30)}.m4a` }) : null;
+              const { embed, components } = buildMusicEmbed(song, attachment);
+
+              const payload = { content: `▶️ **High Quality Stream:**`, embeds: [embed], components };
+              if (attachment) payload.files = [attachment];
+
+              await i.editReply(payload);
             } else {
-              await i.editReply({ content: `*sends a smug sticker* Fine, here's "${picked.title}".`, embeds: [embed], components });
+              await i.editReply({ content: `*sends a broken sticker* Failed to get the link.` });
             }
           }
         });
@@ -545,24 +535,24 @@ module.exports = {
         if (results.length === 0) return message.reply(`*sends a pouting sticker* Tch... I couldn't find that on YouTube, baka.`);
 
         const picked = results[0];
-        const dlUrl = await fetchAudioUrl(picked.id);
-        const { embed, components } = buildYTEmbed(picked, dlUrl);
+        const song = await fetchSongByUrl(picked.url);
 
-        if (dlUrl) {
-          const audioBuffer = await downloadAudioBuffer(dlUrl);
-          if (audioBuffer) {
-             const attachment = new AttachmentBuilder(audioBuffer, { name: `${picked.title.substring(0, 50)}.mp3` });
-             return message.reply({ content: `▶️ **Audio Player:**`, embeds: [embed], components, files: [attachment] });
-          } else {
-             return message.reply({ content: `▶️ **Direct Link:**\n${dlUrl}`, embeds: [embed], components });
-          }
+        if (song) {
+          const buffer = await downloadAudioBuffer(song.playUrl);
+          const attachment = buffer ? new AttachmentBuilder(buffer, { name: `${song.title.substring(0, 30)}.m4a` }) : null;
+          const { embed, components } = buildMusicEmbed(song, attachment);
+
+          const payload = { content: `▶️ **High Quality Stream:**`, embeds: [embed], components };
+          if (attachment) payload.files = [attachment];
+
+          return message.reply(payload);
         } else {
-          return message.reply({ content: `*sends a smug sticker* Tch... fine, here's "${query}".`, embeds: [embed], components });
+          return message.reply({ content: `*sends a broken sticker* Failed to get the link.` });
         }
       }
 
       // ==========================================
-      // --- 6. PAGALNEW MUSIC SEARCH (WITH YOUTUBE FALLBACK) ---
+      // --- 6. MAIN MUSIC SEARCH ---
       // ==========================================
       const isMusicRequest = /\b(give|play|search|find|download)\b.*\b(song|music|mp3)\b/i.test(prompt) || /^play\s+/i.test(prompt) || prompt.toLowerCase().includes('song');
 
@@ -573,53 +563,30 @@ module.exports = {
         const list = await searchMusicList(query);
         
         if (!list || list.length === 0) {
-          console.log(`⚠️ Pagalnew failed/blocked, falling back to YouTube for: ${query}`);
-          const ytResults = await searchYouTube(`${query} song`);
-          
-          if (ytResults.length > 0) {
-            const picked = ytResults[0];
-            const dlUrl = await fetchAudioUrl(picked.id);
-            const { embed, components } = buildYTEmbed(picked, dlUrl);
-
-            if (dlUrl) {
-              const audioBuffer = await downloadAudioBuffer(dlUrl);
-              if (audioBuffer) {
-                const attachment = new AttachmentBuilder(audioBuffer, { name: `${picked.title.substring(0, 50)}.mp3` });
-                return message.reply({ 
-                  content: `*sends a smug sticker* Tch... the download site is being annoying, so I found it on YouTube. Here:`, 
-                  embeds: [embed], 
-                  components, 
-                  files: [attachment] 
-                });
-              } else {
-                return message.reply({ 
-                  content: `*sends a smug sticker* Tch... the download site is being annoying, so I found it on YouTube. Here:`, 
-                  embeds: [embed], 
-                  components 
-                });
-              }
-            } else {
-              return message.reply({ 
-                content: `*sends a smug sticker* Tch... the download site is being annoying, so I found it on YouTube. Here:`, 
-                embeds: [embed], 
-                components 
-              });
-            }
-          } else {
-            return message.reply(`*sends a pouting sticker* Tch... I couldn't find any song called "${query}", baka.`);
-          }
+          return message.reply(`*sends a pouting sticker* Tch... I couldn't find any song called "${query}", baka.`);
         }
 
-        const first = await fetchSongByUrl(list[0].url);
-        if (!first) return message.reply("*sends a broken sticker* The download site gave me garbage data. Try again later, idiot.");
+        const first = await fetchSongByUrl(list[0].videoId);
+        if (!first) return message.reply("*sends a broken sticker* YouTube gave me garbage data. Try again later.");
 
         const molfoidText = `*sends a smug sticker* Tch... fine, here's "${query}". Don't expect me to do this every time, dummy.`;
         
-        const replyMsg = await message.reply({
+        const buffer = await downloadAudioBuffer(first.playUrl);
+        const attachment = buffer ? new AttachmentBuilder(buffer, { name: `${first.title.substring(0, 30)}.m4a` }) : null;
+        
+        const { embed, components } = buildMusicEmbed(first, attachment);
+
+        const finalComponents = [...buildMusicRows(list), ...components];
+
+        const payload = {
           content: molfoidText,
-          embeds: [buildMusicEmbed(first)],
-          components: buildMusicRows(list, first)
-        });
+          embeds: [embed],
+          components: finalComponents
+        };
+        
+        if (attachment) payload.files = [attachment];
+
+        const replyMsg = await message.reply(payload);
 
         if (list.length > 1) {
           const collector = replyMsg.createMessageComponentCollector({ filter: (i) => i.customId === 'music_pick_msg', time: 5 * 60 * 1000 });
@@ -629,10 +596,22 @@ module.exports = {
             await i.deferUpdate();
 
             const picked = list[Number(i.values[0])];
-            const song = await fetchSongByUrl(picked.url);
+            const song = await fetchSongByUrl(picked.videoId);
 
             if (song) {
-              await i.editReply({ content: molfoidText, embeds: [buildMusicEmbed(song)], components: buildMusicRows(list, song) });
+              const newBuffer = await downloadAudioBuffer(song.playUrl);
+              const newAttachment = newBuffer ? new AttachmentBuilder(newBuffer, { name: `${song.title.substring(0, 30)}.m4a` }) : null;
+              const { embed: newEmbed, components: newComponents } = buildMusicEmbed(song, newAttachment);
+
+              const newPayload = { 
+                content: molfoidText, 
+                embeds: [newEmbed], 
+                components: [...buildMusicRows(list), ...newComponents] 
+              };
+              
+              if (newAttachment) newPayload.files = [newAttachment];
+
+              await i.editReply(newPayload);
             }
           });
 
