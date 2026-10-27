@@ -3,9 +3,6 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { spawn, execFile } = require('child_process');
-const { promisify } = require('util');
-const execFileP = promisify(execFile);
 
 process.env.YTDL_NO_UPDATE = '1';
 
@@ -14,55 +11,16 @@ try { pontalabsYtdl = require('@pontalabs/ytdl'); } catch {}
 let ytdlCore = null;
 try { ytdlCore = require('@distube/ytdl-core'); }
 catch { try { ytdlCore = require('ytdl-core'); } catch {} }
-let FormDataLib = null;
-try { FormDataLib = require('form-data'); } catch {}
-
 
 // ============================================================
 // Constants
 // ============================================================
-const FLAC_CDN          = 'https://filescutyt.com';
-const FLAC_CACHE        = path.join(os.homedir(), '.cutyt_flac_cache.json');
-const FLAC_DIR          = path.join(os.homedir(), '.molfoid-flac');
-const SLUG_MAX_LEN      = 80;
-const FLAC_MAGIC_HEX    = '664c6143';
-const DISCORD_ATTACH_MAX = 24 * 1024 * 1024;
-const UPLOAD_MAX         = 1024 * 1024 * 1024; // Increased to 1GB for Litterbox
+const FLAC_CDN       = 'https://filescutyt.com';
+const FLAC_CACHE     = path.join(os.homedir(), '.cutyt_flac_cache.json');
+const SLUG_MAX_LEN   = 80;
+const FLAC_MAGIC_HEX = '664c6143';
 
-try { fs.mkdirSync(FLAC_DIR, { recursive: true }); } catch {}
-
-
-// ============================================================
-// Auto-detect python + ffmpeg
-// ============================================================
-let PYTHON = null, FFMPEG_DIR = null;
-
-async function findPython() {
-  if (PYTHON) return PYTHON;
-  for (const c of ['python', 'python3', 'py']) {
-    try {
-      const { stdout } = await execFileP(c, ['--version'], { timeout: 4000 });
-      if (String(stdout).toLowerCase().includes('python')) { PYTHON = c; return c; }
-    } catch {}
-  }
-  return null;
-}
-
-function findFfmpegDir() {
-  if (FFMPEG_DIR) return FFMPEG_DIR;
-  const cands = [
-    process.env.FFMPEG_LOCATION,
-    'C:\\ffmpeg\\bin',
-    'C:\\ffmpeg',
-    ...(process.env.PATH || '').split(path.delimiter).map(p => p.trim()).filter(Boolean),
-  ].filter(Boolean);
-  for (const c of cands) {
-    try { if (fs.existsSync(path.join(c, 'ffmpeg.exe'))) { FFMPEG_DIR = c; return c; } } catch {}
-  }
-  FFMPEG_DIR = 'C:\\ffmpeg\\bin';
-  return FFMPEG_DIR;
-}
-
+try { fs.mkdirSync(path.dirname(FLAC_CACHE), { recursive: true }); } catch {}
 
 // ============================================================
 // Cache
@@ -80,7 +38,6 @@ function cacheSet(id, data) {
   c[id] = { ts: Date.now(), ...data };
   saveCache(c);
 }
-
 
 // ============================================================
 // Helpers
@@ -113,9 +70,8 @@ function buildSlugCandidates(title) {
   return [...set];
 }
 
-
 // ============================================================
-// Play URL
+// Play URL (Pure Node.js)
 // ============================================================
 async function getPlayUrl(ytUrl) {
   if (ytdlCore) {
@@ -133,7 +89,6 @@ async function getPlayUrl(ytUrl) {
   }
   return null;
 }
-
 
 // ============================================================
 // Verify remote FLAC
@@ -161,196 +116,39 @@ async function probeFirstWorking(urls) {
   return null;
 }
 
-
 // ============================================================
-// LOCAL yt-dlp
+// PURE NODE.JS: CutYT API Conversion (No Python/ffmpeg required)
 // ============================================================
-async function downloadFlacLocal(ytUrl, videoId) {
+async function triggerCutytConversion(ytUrl) {
   try {
-    const cached = fs.readdirSync(FLAC_DIR).find(f => f.includes(`[${videoId}]`) && f.endsWith('.flac'));
-    if (cached) {
-      const fp = path.join(FLAC_DIR, cached);
-      if (fs.statSync(fp).size > 50_000) return fp;
-    }
-  } catch {}
-
-  const py = await findPython();
-  if (!py) { console.log('❌ [yt-dlp] python not found'); return null; }
-
-  const ffmpegDir = findFfmpegDir();
-  const output = path.join(FLAC_DIR, `%(title).180B [%(id)s].%(ext)s`);
-
-  const args = [
-    '-m', 'yt_dlp',
-    '--no-playlist', '--no-mtime',
-    '-f', 'bestaudio',
-    '-x', '--audio-format', 'flac', '--audio-quality', '0',
-    '--ffmpeg-location', ffmpegDir,
-    '-o', output,
-    '--no-warnings', '--no-progress',
-    ytUrl,
-  ];
-
-  console.log(`🎬 [yt-dlp] converting to FLAC (ffmpeg: ${ffmpegDir})`);
-
-  return new Promise(resolve => {
-    const start = Date.now();
-    const proc = spawn(py, args, { windowsHide: true });
-    let stderr = '';
-
-    proc.stderr.on('data', d => { stderr += d; });
-    proc.on('error', err => {
-      console.log(`❌ [yt-dlp] spawn error: ${err.message}`);
-      resolve(null);
+    console.log(`⚡ [CutYT] Requesting conversion from Azure...`);
+    await axios.post('https://cutytapi.azurewebsites.net/exec/method', {
+      methodName: 'GetYtDlpData',
+      arguments: `--no-playlist --no-mtime -N 8 -f ba[acodec!=none]/bestaudio[acodec!=none]/ba/bestaudio/best[acodec!=none][height<=360]/worst[acodec!=none] -x --audio-format flac --audio-quality 0 "${ytUrl}"`
+    }, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Origin': 'https://www.cutyt.com',
+        'Referer': 'https://www.cutyt.com/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'
+      },
+      timeout: 90000,
+      validateStatus: () => true
     });
-    proc.on('close', code => {
-      const secs = ((Date.now() - start) / 1000).toFixed(1);
-      if (code !== 0) {
-        console.log(`❌ [yt-dlp] exit ${code} (${secs}s): ${stderr.slice(-200).replace(/\n/g, ' ')}`);
-        return resolve(null);
-      }
-      try {
-        const found = fs.readdirSync(FLAC_DIR).find(f => f.includes(`[${videoId}]`) && f.endsWith('.flac'));
-        if (found) {
-          const fp = path.join(FLAC_DIR, found);
-          const mb = (fs.statSync(fp).size / 1024 / 1024).toFixed(2);
-          console.log(`✅ [yt-dlp] FLAC ready in ${secs}s: ${found} (${mb} MB)`);
-          resolve(fp);
-        } else {
-          console.log(`❌ [yt-dlp] finished but no .flac found in ${FLAC_DIR}`);
-          resolve(null);
-        }
-      } catch { resolve(null); }
-    });
-
-    setTimeout(() => {
-      try { proc.kill('SIGKILL'); } catch {}
-      console.log(`❌ [yt-dlp] killed after 180s`);
-      resolve(null);
-    }, 180000);
-  });
-}
-
-
-// ============================================================
-// File host upload — Pixeldrain + Litterbox + Tmpfiles Fallbacks
-// ============================================================
-async function uploadToFileHost(filePath) {
-  if (!filePath || !fs.existsSync(filePath)) return null;
-  const size = fs.statSync(filePath).size;
-  if (size > UPLOAD_MAX) {
-    console.log(`⚠️ [upload] File exceeds ${UPLOAD_MAX / 1024 / 1024} MB limit`);
-    return null;
+    return true;
+  } catch (e) {
+    console.log(`❌ [CutYT] Azure request failed: ${e.message}`);
+    return false;
   }
-
-  const fileName = path.basename(filePath).replace(/[^\w.\-]/g, '_');
-  const sizeMB = (size / 1024 / 1024).toFixed(1);
-  console.log(`📤 [upload] ${sizeMB} MB → ${fileName}`);
-
-  // Helper to extract URL safely
-  const getUrl = (data) => {
-    if (typeof data === 'string' && data.startsWith('http')) return data.trim();
-    if (data && typeof data === 'object') {
-      if (typeof data.link === 'string' && data.link.startsWith('http')) return data.link;
-      if (typeof data.url === 'string' && data.url.startsWith('http')) return data.url;
-      if (typeof data.id === 'string') return `https://pixeldrain.com/api/file/${data.id}`;
-      if (data.data && typeof data.data.url === 'string') {
-        return data.data.url.replace('tmpfiles.org/', 'tmpfiles.org/dl/');
-      }
-    }
-    return null;
-  };
-
-  // ---- 1) Pixeldrain (POST, 20 GB limit, highly reliable) ----
-  if (FormDataLib) {
-    try {
-      console.log(`   → pixeldrain.com...`);
-      const form = new FormDataLib();
-      form.append('file', fs.createReadStream(filePath));
-      
-      const res = await axios.post('https://pixeldrain.com/api/file', form, {
-        headers: { ...form.getHeaders(), 'User-Agent': 'Mozilla/5.0' },
-        maxBodyLength: Infinity, maxContentLength: Infinity, timeout: 300000, validateStatus: () => true,
-      });
-      
-      const url = getUrl(res.data);
-      if (url) { console.log(`   ✅ pixeldrain: ${url}`); return url; }
-      console.log(`   ⚠️ pixeldrain rejected:`, res.data);
-    } catch (e) { console.log(`   ⚠️ pixeldrain: ${e.message}`); }
-  }
-
-  // ---- 2) Litterbox (POST, 1 GB limit) ----
-  if (FormDataLib) {
-    try {
-      console.log(`   → litterbox.catbox.moe...`);
-      const form = new FormDataLib();
-      form.append('reqtype', 'fileupload');
-      form.append('time', '72h');
-      form.append('fileToUpload', fs.createReadStream(filePath));
-      
-      const res = await axios.post('https://litterbox.catbox.moe/resources/internals/api.php', form, {
-        headers: { ...form.getHeaders(), 'User-Agent': 'Mozilla/5.0' },
-        maxBodyLength: Infinity, maxContentLength: Infinity, timeout: 300000, validateStatus: () => true,
-      });
-      
-      const url = getUrl(res.data);
-      if (url) { console.log(`   ✅ litterbox: ${url}`); return url; }
-      console.log(`   ⚠️ litterbox rejected (maybe file too big?):`, res.data);
-    } catch (e) { console.log(`   ⚠️ litterbox: ${e.message}`); }
-  }
-
-  // ---- 3) Tmpfiles (POST, 100 MB limit) ----
-  if (FormDataLib) {
-    try {
-      console.log(`   → tmpfiles.org...`);
-      const form = new FormDataLib();
-      form.append('file', fs.createReadStream(filePath));
-      
-      const res = await axios.post('https://tmpfiles.org/api/v1/upload', form, {
-        headers: { ...form.getHeaders(), 'User-Agent': 'Mozilla/5.0' },
-        maxBodyLength: Infinity, maxContentLength: Infinity, timeout: 300000, validateStatus: () => true,
-      });
-      
-      const url = getUrl(res.data);
-      if (url) { console.log(`   ✅ tmpfiles: ${url}`); return url; }
-      console.log(`   ⚠️ tmpfiles rejected:`, res.data);
-    } catch (e) { console.log(`   ⚠️ tmpfiles: ${e.message}`); }
-  }
-
-  // ---- 4) Catbox (POST, 200 MB limit, permanent) ----
-  if (FormDataLib) {
-    try {
-      console.log(`   → catbox.moe...`);
-      const form = new FormDataLib();
-      form.append('reqtype', 'fileupload');
-      form.append('fileToUpload', fs.createReadStream(filePath));
-      
-      const res = await axios.post('https://catbox.moe/user/api.php', form, {
-        headers: { ...form.getHeaders(), 'User-Agent': 'Mozilla/5.0' },
-        maxBodyLength: Infinity, maxContentLength: Infinity, timeout: 300000, validateStatus: () => true,
-      });
-      
-      const url = getUrl(res.data);
-      if (url) { console.log(`   ✅ catbox: ${url}`); return url; }
-      console.log(`   ⚠️ catbox rejected:`, res.data);
-    } catch (e) { console.log(`   ⚠️ catbox: ${e.message}`); }
-  }
-
-  console.log(`❌ [upload] all hosts failed for ${fileName}`);
-  return null;
 }
 
 // ============================================================
-// Fast FLAC lookup (cache + CDN, no conversion)
+// Fast FLAC lookup (Cache + CDN)
 // ============================================================
 async function findFlacFast(videoId, title) {
   const cached = cacheGet(videoId);
   if (cached?.url && await verifyRemoteFlac(cached.url)) {
     return { type: 'url', value: cached.url, size: cached.size };
-  }
-  if (cached?.localPath && fs.existsSync(cached.localPath)) {
-    const size = fs.statSync(cached.localPath).size;
-    return { type: 'local', value: cached.localPath, size };
   }
 
   const candidates = buildSlugCandidates(title).map(s => `${FLAC_CDN}/${s}.flac`);
@@ -358,15 +156,14 @@ async function findFlacFast(videoId, title) {
   if (hit) {
     const size = (await axios.head(hit, { timeout: 5000, validateStatus: () => true })
       .catch(() => null))?.headers?.['content-length'];
-    cacheSet(videoId, { url: hit, localPath: null, size: size ? Number(size) : null, via: 'cdn-probe' });
+    cacheSet(videoId, { url: hit, size: size ? Number(size) : null, via: 'cdn-probe' });
     return { type: 'url', value: hit, size: size ? Number(size) : null };
   }
   return null;
 }
 
-
 // ============================================================
-// Background FLAC job
+// Background FLAC job (Pure Node.js)
 // ============================================================
 const pendingFlac = new Map();
 
@@ -375,25 +172,27 @@ function ensureFlac(videoId, ytUrl, title) {
 
   const task = (async () => {
     try {
+      // 1. Check if someone already converted it
       const quick = await findFlacFast(videoId, title);
       if (quick) return quick;
 
-      const localPath = await downloadFlacLocal(ytUrl, videoId);
-      if (!localPath) return null;
+      // 2. Trigger Azure API
+      const reqOk = await triggerCutytConversion(ytUrl);
+      if (!reqOk) return null;
 
-      const size = fs.statSync(localPath).size;
-
-      let url = null;
-      if (size > DISCORD_ATTACH_MAX) {
-        console.log(`📤 [BG] FLAC is ${(size / 1024 / 1024).toFixed(1)} MB — uploading`);
-        url = await uploadToFileHost(localPath);
+      // 3. Poll CDN for up to 90 seconds (Azure needs time to process)
+      const candidates = buildSlugCandidates(title).map(s => `${FLAC_CDN}/${s}.flac`);
+      for (let i = 0; i < 45; i++) {
+        await sleep(2000);
+        const hit = await probeFirstWorking(candidates);
+        if (hit) {
+          console.log(`✅ [CutYT] FLAC ready: ${hit}`);
+          cacheSet(videoId, { url: hit, title, via: 'cutyt-api' });
+          return { type: 'url', value: hit, size: null };
+        }
       }
-
-      cacheSet(videoId, { localPath, url, size, title, via: 'ytdlp' });
-
-      return url
-        ? { type: 'url', value: url, size, localPath }
-        : { type: 'local', value: localPath, size };
+      console.log(`❌ [CutYT] Timeout waiting for CDN file (90s)`);
+      return null;
     } catch (e) {
       console.log(`❌ [BG] job error: ${e.message}`);
       return null;
@@ -405,7 +204,6 @@ function ensureFlac(videoId, ytUrl, title) {
   pendingFlac.set(videoId, task);
   return task;
 }
-
 
 // ============================================================
 // Search
@@ -424,7 +222,6 @@ async function searchMusicList(query) {
     }));
   } catch { return []; }
 }
-
 
 // ============================================================
 // fetchSongByUrl
@@ -453,11 +250,10 @@ async function fetchSongByUrl(urlOrId) {
       findFlacFast(videoId, title),
     ]);
 
-    let downloadUrl = null, localPath = null, flacSize = null, flacPending = false;
+    let downloadUrl = null, flacSize = null, flacPending = false;
 
     if (fastFlac) {
-      if (fastFlac.type === 'url') downloadUrl = fastFlac.value;
-      else localPath = fastFlac.value;
+      downloadUrl = fastFlac.value;
       flacSize = fastFlac.size || null;
     } else {
       flacPending = true;
@@ -467,8 +263,8 @@ async function fetchSongByUrl(urlOrId) {
 
     return {
       videoId, title, url: ytUrl, thumbnail, playUrl,
-      downloadUrl, localPath, flacSize,
-      isFlac: !!(downloadUrl || localPath),
+      downloadUrl, localPath: null, flacSize, // localPath is always null now
+      isFlac: !!downloadUrl,
       flacPending,
       singers: artist, author: artist, duration,
     };
@@ -478,56 +274,27 @@ async function fetchSongByUrl(urlOrId) {
   }
 }
 
-
 // ============================================================
 // waitForFlac
 // ============================================================
 async function waitForFlac(videoId, timeoutMs = 180000, forceUpload = false) {
   const c = cacheGet(videoId);
-
   if (c?.url && await verifyRemoteFlac(c.url)) {
-    return { type: 'url', value: c.url, size: c.size, localPath: c.localPath };
-  }
-
-  if (c?.localPath && fs.existsSync(c.localPath)) {
-    const size = fs.statSync(c.localPath).size;
-
-    if (forceUpload && size > DISCORD_ATTACH_MAX) {
-      console.log(`📤 [on-demand] uploading ${(size / 1024 / 1024).toFixed(1)} MB FLAC...`);
-      const url = await uploadToFileHost(c.localPath);
-      if (url) {
-        cacheSet(videoId, { ...c, url });
-        return { type: 'url', value: url, size, localPath: c.localPath };
-      }
-      console.log(`❌ [on-demand] upload failed`);
-    }
-    return { type: 'local', value: c.localPath, size };
+    return { type: 'url', value: c.url, size: c.size };
   }
 
   const pending = pendingFlac.get(videoId);
   if (pending) {
     const result = await Promise.race([pending, sleep(timeoutMs).then(() => null)]);
-    if (!result) return null;
-
-    if (forceUpload && result.type === 'local' && result.size > DISCORD_ATTACH_MAX) {
-      console.log(`📤 [on-demand retry] uploading ${(result.size / 1024 / 1024).toFixed(1)} MB FLAC...`);
-      const url = await uploadToFileHost(result.value);
-      if (url) {
-        cacheSet(videoId, { ...(cacheGet(videoId) || {}), url });
-        return { type: 'url', value: url, size: result.size, localPath: result.value };
-      }
-    }
     return result;
   }
 
   return null;
 }
 
-
 module.exports = {
   searchMusicList,
   fetchSongByUrl,
   waitForFlac,
   getVideoId,
-  uploadToFileHost,
 };
